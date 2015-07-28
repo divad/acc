@@ -1,2 +1,5 @@
 #!/bin/bash
 mkdir -p /etc/acc
+mkdir -p /etc/acc/rules
+touch /etc/acc/rules/local.conf
+touch /etc/acc/rules/default.conf

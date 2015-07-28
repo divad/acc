@@ -34,7 +34,6 @@ import sys
 from optparse import OptionParser, OptionGroup
 import pwd
 import grp
-# for netgroup API in C
 from ctypes import CDLL,c_char_p
 from ctypes import byref as _byref
 import shutil
@@ -164,10 +163,12 @@ def main():
 						sys.stderr.write("Netgroup not found\n")
 						sys.exit(1)
 
+				except Exception as ex:
+					sys.stderr.write("Netgroup not found\n")
+					sys.exit(1)					
+
 				finally:
 					libc.endnetgrent()
-					sys.stderr.write("Netgroup not found\n")
-					sys.exit(1)
 					
 				rule = ':@' + name + ':ALL'
 
@@ -196,7 +197,7 @@ def main():
 			accessconf.append(line)
 		fd.close()
 	except (IOError,OSError), e:
-		sys.stderr.write('Warning - Could not read /etc/acc/local.conf: ' + str(e.strerror) + "\n")
+		sys.stderr.write('Warning: Could not read /etc/acc/local.conf: ' + str(e.strerror) + "\n")
 		
 	# /etc/acc/rules/*
 	
@@ -220,7 +221,7 @@ def main():
 					
 		fd.close()
 	except (IOError,OSError), e:
-		sys.stderr.write('Warning - Could not read /etc/acc/rules/' + rule + ': ' + str(e.strerror) + "\n")
+		sys.stderr.write('Error: Could not read from /etc/acc/rules/: ' + str(e.strerror) + "\n")
 		sys.stderr.write("Aborting...\n")
 		sys.exit(1)
 		
@@ -231,13 +232,13 @@ def main():
 			accessconf.append(line)
 		fd.close()
 	except (IOError,OSError), e:
-		sys.stderr.write('Warning - Could not read /etc/acc/default.conf: ' + str(e.strerror) + "\n")
+		sys.stderr.write('Warning: Could not read /etc/acc/default.conf: ' + str(e.strerror) + "\n")
 	
 	## Take a backup of the file
 	try:
 		shutil.copy2('/etc/security/access.conf','/etc/security/access.conf.bak')
 	except IOError, e:
-		sys.stderr.write('Unable copy /etc/security/access.conf to /etc/security/access.conf.bak: ' + str(e.strerror) + "\n")
+		sys.stderr.write('Error: Unable copy /etc/security/access.conf to /etc/security/access.conf.bak: ' + str(e.strerror) + "\n")
 		sys.stderr.write("Aborting...\n")
 		sys.exit(1)
 	
@@ -249,7 +250,7 @@ def main():
 			fd.write(rule + "\n")
 		fd.close()
 	except IOError, e:
-		sys.stderr.write('Unable to write to access.conf: ' + str(e.strerror) + "\n")
+		sys.stderr.write('Error: Unable to write to access.conf: ' + str(e.strerror) + "\n")
 		sys.stderr.write("Aborting...\n")
 		sys.exit(1)
 	
