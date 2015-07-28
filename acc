@@ -1,0 +1,245 @@
+#!/usr/bin/python
+
+# grant logon access to db2z07:
+# acc -u db2z07
+
+# remove previous grant:
+# acc -ue db2z07
+
+# deny logon access to db2z07:
+# acc -ud db2z07
+
+# same, but for local groups:
+# acc -g sys
+# acc -ge sys
+# acc -gd sys
+
+# same, but for netgroups:
+# acc -n
+
+# to update access.conf:
+# acc -b
+
+# there are two files also used during building:
+# /etc/soton/access/local.conf - local rules, put first
+# /etc/soton/access/default.conf - default at the bottom
+
+import os
+import sys
+from optparse import OptionParser, OptionGroup
+import pwd
+import grp
+import nis
+import shutil
+
+## We currently use the Python "nis" module for netgroups - because it works and its easy.
+## In the future we should switch to something else when we stop using NIS... - probably shell out to getent netgroup.
+
+def versionIsRhel5():
+	# I cheat to determine if this is RHEL5 by seeing if the python version is 2.4
+	# all other RHEL versions use a different python version (2.6 on RHEL6, 2.3 on RHEL4).
+	# this isn't the best check ever, but it works...
+	(major,minor,micro,release,serial) = sys.version_info
+	if minor == 4:
+		return True
+	return False
+
+def main():
+	parser = OptionParser(usage='Usage: %prog [options]')
+	parser.add_option('-l','--list',dest='mode',action="store_const",const="list",help='List rules in current configuration')
+	parser.add_option('-u','--user',dest='type',action="store_const",const="user",help='Grant/deny/erase access to a POSIX user (default)')
+	parser.add_option('-g','--group',dest='type',action="store_const",const="group",help='Grant/deny/erase access to a POSIX group')
+	parser.add_option('-n','--netgroup',dest='type',action="store_const",const="netgroup",default='user',help='Grant/deny/erase access to a POSIX netgroup')
+	parser.add_option('-a','--allow',dest='mode',action="store_const",const="allow",help='Grant access rights (default)')	
+	parser.add_option('-d','--deny',dest='mode',action="store_const",const="deny",help='Deny access rights instead of grant access')
+	parser.add_option('-e','--erase',dest='mode',action="store_const",const="erase",help='Erase a previous rule for the specified user/group/netgroup')
+	parser.add_option('-b','--build',dest='mode',action="store_const",const="build",default='allow',help='Build rules and produce a fresh /etc/security/access.conf')	
+	parser.add_option('-q','--quiet',dest='quiet',action="store_true",default=False,help='Only output errors')
+	(options, args) = parser.parse_args()
+
+	if os.path.exists('/etc/soton/access/disabled'):
+		sys.stderr.write("acc based access control has been manually disabled on this server, exiting\n")
+		sys.exit(2)
+
+	if options.mode == 'list':
+		try:
+			fd = open('/etc/security/access.conf','r')
+			data = fd.read()
+			fd.close
+			sys.stdout.write(data)
+		except IOError, e:
+			sys.stderr.write('Unable to read /etc/security/access.conf: ' + str(e.strerror) + "\n")
+			sys.exit(1)
+
+		sys.exit(0)
+
+	if not options.mode == 'build':
+		if len(args) == 0:
+			parser.print_help()
+			sys.exit(2)
+	
+		# User, group or netgroup name
+		name = args[0]	
+		
+		# File path:
+		path = '/etc/soton/access/rules/' + options.type + '_' + name		
+	
+		# Does /etc/soton/access/rules/user|group_name exist?
+		if os.path.exists(path):
+			# Get the contents
+			try:
+				fd = open(path,'r')
+				data = fd.read()
+				fd.close()
+			except IOError, e:
+				sys.stderr.write('Unable to read from existing rule ' + path + ': ' + str(e.strerror) + "\n")
+				sys.stderr.write("Aborting...\n")
+				sys.exit(1)
+		
+			if len(data) > 0:
+				if options.mode == 'allow':
+					if data[0] == '-':
+						if not options.quiet:
+							sys.stderr.write('Warning - Changing existing rule from deny to allow' + "\n")
+						
+				if options.mode == 'deny':
+					if data[0] == '+':
+						if not options.quiet:
+							sys.stderr.write('Warning - Changing existing rule from allow to deny' + "\n")
+			
+		if options.mode == 'erase':
+			if os.path.exists(path):
+				## delete the rule file
+				try:
+					os.remove(path)
+				except (OSError,IOError), e:
+					sys.stderr.write('Unable to erase rule file ' + path + ': ' + str(e.strerror) + "\n")
+					sys.stderr.write("Aborting...\n")
+					sys.exit(1)
+			else:
+				sys.stderr.write("No rule exists matching that pattern\n")
+				sys.stderr.write("Aborting...\n")
+				sys.exit(1)				
+		
+		else:
+			# Build rule
+			if options.type == 'user':
+				## Validate the user
+				try:
+					pwd.getpwnam(name)
+				except KeyError, e:
+					sys.stderr.write("User not found\n")
+					sys.exit(1)
+			
+				rule = ':' + name + ':ALL'			
+			elif options.type == 'group':
+				## Validate the group
+				try:
+					grp.getgrnam(name)
+				except KeyError, e:
+					sys.stderr.write("Group not found\n")
+					sys.exit(1)	
+				
+				## RHEL5 doesn't support the ( ) syntax
+				if versionIsRhel5():
+					rule = ':' + name + ':ALL'
+				else:
+					rule = ':(' + name + '):ALL'
+	 
+			elif options.type == 'netgroup':
+				## How do we validate the netgroup?
+				try:
+					nis.match(name,'netgroup')
+				except nis.error, e:
+					sys.stderr.write("Netgroup not found\n")
+					sys.exit(1)	
+					
+				rule = ':@' + name + ':ALL'
+
+			if options.mode == 'allow':
+				rule = "+" + rule + "\n"
+			elif options.mode == 'deny':
+				rule = "-" + rule + "\n"
+
+			# Write out the rule
+			try:
+				fd = open(path,'w')
+				fd.write(rule)
+				fd.close()
+			except IOError, e:
+				sys.stderr.write('Unable to write new rule to ' + path + ': ' + str(e.strerror) + "\n")
+				sys.stderr.write("Aborting...\n")
+				sys.exit(1)
+	
+	## Build new /etc/security/access.conf
+	accessconf = []
+	
+	# /etc/soton/access/local.conf
+	try:
+		fd = open('/etc/soton/access/local.conf','r')
+		for line in fd.readlines():
+			accessconf.append(line)
+		fd.close()
+	except (IOError,OSError), e:
+		sys.stderr.write('Warning - Could not read /etc/soton/access/local.conf: ' + str(e.strerror) + "\n")
+		
+	# /etc/soton/access/rules/*
+	
+	try:
+		rules = os.listdir('/etc/soton/access/rules/')
+		deny = []
+		allow = []
+		for rule in rules:
+			fd = open('/etc/soton/access/rules/' + rule,'r')
+			for line in fd.readlines():
+				if line[0] == '+':
+					allow.append(line)
+				else:
+					deny.append(line)
+					
+		for line in deny:
+			accessconf.append(line)
+			
+		for line in allow:
+			accessconf.append(line)
+					
+		fd.close()
+	except (IOError,OSError), e:
+		sys.stderr.write('Warning - Could not read /etc/soton/access/rules/' + rule + ': ' + str(e.strerror) + "\n")
+		sys.stderr.write("Aborting...\n")
+		sys.exit(1)
+		
+	# /etc/soton/access/default.conf
+	try:
+		fd = open('/etc/soton/access/default.conf','r')
+		for line in fd.readlines():
+			accessconf.append(line)
+		fd.close()
+	except (IOError,OSError), e:
+		sys.stderr.write('Warning - Could not read /etc/soton/access/default.conf: ' + str(e.strerror) + "\n")
+	
+	## Take a backup of the file
+	try:
+		shutil.copy2('/etc/security/access.conf','/etc/security/access.conf.bak')
+	except IOError, e:
+		sys.stderr.write('Unable copy /etc/security/access.conf to /etc/security/access.conf.bak: ' + str(e.strerror) + "\n")
+		sys.stderr.write("Aborting...\n")
+		sys.exit(1)
+	
+	# Write out the rules
+	try:
+		fd = open('/etc/security/access.conf','w')
+		for rule in accessconf:
+			rule = rule.rstrip()
+			fd.write(rule + "\n")
+		fd.close()
+	except IOError, e:
+		sys.stderr.write('Unable to write to access.conf: ' + str(e.strerror) + "\n")
+		sys.stderr.write("Aborting...\n")
+		sys.exit(1)
+	
+if __name__ == "__main__":
+	if sys.version < '2.4':
+		sys.stderr.write('Python 2.4 or greater is required for this program. Exiting.')
+	else:
+	    main()	
